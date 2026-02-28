@@ -78,19 +78,25 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/282/282869.png", width=100)
     st.title("Club Menu")
     
-    # Password Logic
+    # Check if logged in
     if "is_admin" not in st.session_state:
         st.session_state["is_admin"] = False
 
-    entered_password = st.text_input("Director Password", type="password")
-    
-    if entered_password:
-        if entered_password == st.secrets["admin_password"]:
-            st.session_state["is_admin"] = True
-            st.success("Admin Unlocked")
-        else:
+    # Password Field
+    if not st.session_state["is_admin"]:
+        entered_password = st.text_input("Director Password", type="password")
+        if entered_password:
+            # Check password (ensure 'admin_password' is at TOP of secrets.toml)
+            if "admin_password" in st.secrets and entered_password == st.secrets["admin_password"]:
+                st.session_state["is_admin"] = True
+                st.success("Unlocked")
+                st.rerun()
+            else:
+                st.error("Incorrect Password")
+    else:
+        if st.button("Logout"):
             st.session_state["is_admin"] = False
-            st.error("Incorrect Password")
+            st.rerun()
 
 # --- DATA LOADING ---
 try:
@@ -109,47 +115,44 @@ except Exception:
 # --- MAIN LAYOUT ---
 st.title("♠️ ICC Bridge Club Rankings")
 
-# Tabs visible depend on login status
+# Determine which tabs to show
+tabs = ["🏆 Leaderboards"]
 if st.session_state["is_admin"]:
-    tab1, tab2, tab3 = st.tabs(["🏆 Leaderboards", "📤 Director Upload", "⚙️ Database Admin"])
-else:
-    tab1 = st.tabs(["🏆 Leaderboards"])[0] # Only show first tab to public
+    tabs.append("📤 Director Upload")
+    tabs.append("⚙️ Database Admin")
+
+active_tabs = st.tabs(tabs)
 
 # --- TAB 1: LEADERBOARDS (Public) ---
-with tab1:
+with active_tabs[0]:
     if df.empty:
         st.info("No rankings available yet.")
     else:
-        # 1. VIEW TOGGLE
-        view_mode = st.radio("Select View:", 
-                             ["Monthly Accumulator", "Single Session"], 
-                             horizontal=True)
-        
+        # VIEW TOGGLE
+        view_mode = st.radio("Select View:", ["Monthly Accumulator", "Single Session"], horizontal=True)
         st.divider()
 
-        # LOGIC: MONTHLY ACCUMULATOR
+        # --- MONTHLY VIEW ---
         if view_mode == "Monthly Accumulator":
             col1, col2 = st.columns(2)
             years = sorted(df['Date'].dt.year.unique(), reverse=True)
             sel_year = col1.selectbox("Year", years)
             
             df_year = df[df['Date'].dt.year == sel_year]
-            months = sorted(df_year['Date'].dt.month_name().unique(), 
-                          key=lambda m: datetime.strptime(m, "%B").month)
-            
-            if not months:
-                st.warning("No data for this year.")
+            if df_year.empty:
+                st.warning("No data.")
             else:
+                months = sorted(df_year['Date'].dt.month_name().unique(), 
+                              key=lambda m: datetime.strptime(m, "%B").month)
                 sel_month = col2.selectbox("Month", months, index=len(months)-1)
                 
-                # Filter Data
                 mask = (df['Date'].dt.year == sel_year) & (df['Date'].dt.month_name() == sel_month)
                 monthly_data = df[mask].copy()
                 
                 if monthly_data.empty:
                     st.warning("No data.")
                 else:
-                    # WEIGHTED AVG CALCULATION
+                    # CALCULATION
                     monthly_data['Score_Mass'] = monthly_data['Percentage'] * monthly_data['Boards']
                     
                     leaderboard = monthly_data.groupby('Player').agg(
@@ -161,80 +164,91 @@ with tab1:
                     leaderboard = leaderboard[leaderboard['Total_Boards'] > 0]
                     leaderboard['Weighted_Average'] = leaderboard['Total_Mass'] / leaderboard['Total_Boards']
                     
-                    # Sort & Format
+                    # Sort
                     leaderboard = leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
                     leaderboard.index += 1
+                    
+                    # Formatting
                     leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
                     
-                    # Display
-                    st.dataframe(
-                        leaderboard[['Player', 'Sessions', 'Total_Boards', 'Weighted_Average']], 
-                        use_container_width=True
-                    )
+                    # RENAME & SELECT Columns
+                    display_df = leaderboard[['Player', 'Sessions', 'Total_Boards', 'Weighted_Average']]
+                    display_df.columns = ['Player', 'Sessions', 'Total Boards', 'Weighted Average']
 
-        # LOGIC: SINGLE SESSION
+                    # CENTER ALIGNMENT STYLING
+                    # We use Pandas Styler to center specific columns and headers
+                    styled_df = display_df.style.set_properties(
+                        subset=['Sessions', 'Total Boards', 'Weighted Average'], 
+                        **{'text-align': 'center'}
+                    ).set_table_styles(
+                        [{'selector': 'th', 'props': [('text-align', 'center')]}]
+                    )
+                    
+                    st.dataframe(styled_df, use_container_width=True)
+
+        # --- SINGLE SESSION VIEW ---
         else:
             dates = sorted(df['Date'].dt.date.unique(), reverse=True)
             sel_date = st.selectbox("Select Session Date", dates)
             
             session_data = df[df['Date'].dt.date == sel_date].copy()
-            
             if session_data.empty:
                 st.warning("No data.")
             else:
-                # Simple sort by Percentage for single session
-                ranking = session_data[['Player', 'Percentage', 'Boards']].sort_values(
-                    by='Percentage', ascending=False
-                ).reset_index(drop=True)
-                
+                ranking = session_data[['Player', 'Percentage', 'Boards']].sort_values(by='Percentage', ascending=False).reset_index(drop=True)
                 ranking.index += 1
                 ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
                 
-                st.write(f"### Results for {sel_date}")
-                st.dataframe(ranking, use_container_width=True)
+                # CENTER ALIGNMENT
+                styled_ranking = ranking.style.set_properties(
+                    subset=['Percentage', 'Boards'], 
+                    **{'text-align': 'center'}
+                ).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}]
+                )
+                
+                st.dataframe(styled_ranking, use_container_width=True)
 
 # --- TAB 2: UPLOAD (Admin Only) ---
 if st.session_state["is_admin"]:
-    with tab2:
+    with active_tabs[1]:
         st.header("Upload XML Result")
         uploaded_file = st.file_uploader("Choose XML File", type=['xml'])
         
-        if uploaded_file and st.button("Process & Add"):
+        if uploaded_file and st.button("Process & Update"):
             session_date, new_data = parse_xml_usebio(uploaded_file)
             
             if not new_data.empty:
+                session_str = str(session_date)
+                
+                # OVERWRITE LOGIC
                 existing_dates = df['Date'].dt.date.astype(str).unique() if not df.empty else []
                 
-                if str(session_date) in existing_dates:
-                    st.error(f"⚠️ Results for {session_date} are already in the database.")
-                else:
-                    new_data['Date'] = new_data['Date'].astype(str)
-                    if not df.empty:
-                        df['Date'] = df['Date'].dt.date.astype(str)
-                    
-                    updated_df = pd.concat([df, new_data], ignore_index=True)
-                    CONN.update(worksheet="Sheet1", data=updated_df)
-                    st.success(f"✅ Added {session_date}!")
-                    st.balloons()
-                    st.cache_data.clear()
+                if session_str in existing_dates:
+                    st.warning(f"⚠️ Results for {session_str} already exist. Overwriting...")
+                    df = df[df['Date'].dt.date.astype(str) != session_str]
+                
+                new_data['Date'] = new_data['Date'].astype(str)
+                if not df.empty:
+                    df['Date'] = df['Date'].dt.date.astype(str)
+                
+                updated_df = pd.concat([df, new_data], ignore_index=True)
+                
+                CONN.update(worksheet="Sheet1", data=updated_df)
+                st.success(f"✅ Successfully updated results for {session_date}!")
+                st.cache_data.clear()
 
 # --- TAB 3: ADMIN (Admin Only) ---
 if st.session_state["is_admin"]:
-    with tab3:
+    with active_tabs[2]:
         st.header("Maintenance")
-        st.warning("Be careful.")
-        
         col_a1, col_a2 = st.columns(2)
         with col_a1:
-            if st.button("🗑️ Wipe Database (Reset Columns)"):
+            if st.button("🗑️ Wipe Entire Database"):
                 empty_df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
                 CONN.update(worksheet="Sheet1", data=empty_df)
                 st.success("Database reset.")
                 st.rerun()
         with col_a2:
-            if st.button("🔄 Refresh Cache"):
-                st.cache_data.clear()
-                st.rerun()
-        
-        st.write("Current Data Preview:")
-        st.dataframe(df)
+            st.write("Current Database Preview:")
+            st.dataframe(df)
