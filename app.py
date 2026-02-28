@@ -5,7 +5,9 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
-# Connect to Google Sheets using the secrets you just saved
+st.set_page_config(page_title="ICC Bridge Club", layout="wide", page_icon="♠️")
+
+# Connect to Google Sheets
 try:
     CONN = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
@@ -14,16 +16,13 @@ except Exception as e:
 
 # --- HELPER FUNCTIONS ---
 def clean_name(name_str):
-    """Standardizes names (Title Case, removes extra spaces)"""
     if not name_str: return None
-    # Remove # codes if present (e.g. Name#123)
     if '#' in name_str:
         name_str = name_str.split('#')[0]
     clean = name_str.strip().title()
     return clean if clean else None
 
 def parse_xml_usebio(uploaded_file):
-    """Parses the XML file and extracts Date + Scores"""
     try:
         tree = ET.parse(uploaded_file)
         root = tree.getroot()
@@ -32,9 +31,9 @@ def parse_xml_usebio(uploaded_file):
         date_node = root.find('.//DATE')
         if date_node is None or not date_node.text:
             return None, pd.DataFrame() 
-            
+        
         raw_date = date_node.text
-        # Handle DD/MM/YYYY or YYYY-MM-DD
+        # Handle date formats
         try:
             session_date = datetime.strptime(raw_date, "%d/%m/%Y").date()
         except ValueError:
@@ -43,25 +42,28 @@ def parse_xml_usebio(uploaded_file):
             except:
                 return None, pd.DataFrame()
         
-        # 2. Extract Scores
+        # 2. Extract Scores & Boards
         records = []
         for pair in root.findall('.//PARTICIPANTS/PAIR'):
             try:
-                # Get Percentage
                 pct_node = pair.find('PERCENTAGE')
-                if pct_node is None: continue
-                pct = float(pct_node.text)
+                boards_node = pair.find('BOARDS_PLAYED')
                 
-                # Get Players
+                if pct_node is None: continue
+                
+                pct = float(pct_node.text)
+                boards = int(boards_node.text) if boards_node is not None else 0
+                
                 for player in pair.findall('PLAYER'):
                     p_name = player.find('PLAYER_NAME')
                     if p_name is not None:
                         clean_p = clean_name(p_name.text)
-                        if clean_p:
+                        if clean_p and boards > 0:
                             records.append({
-                                'Date': str(session_date), # Store as string for Sheets compatibility
+                                'Date': str(session_date),
                                 'Player': clean_p,
-                                'Percentage': pct
+                                'Percentage': pct,
+                                'Boards': boards
                             })
             except: continue
             
@@ -71,133 +73,168 @@ def parse_xml_usebio(uploaded_file):
         st.error(f"XML Parsing Error: {e}")
         return None, pd.DataFrame()
 
-# --- APP LAYOUT ---
-st.set_page_config(page_title="ICC Bridge Admin", layout="wide", page_icon="♠️")
-st.title("♠️ ICC Bridge Club - Director Console")
+# --- SIDEBAR LOGIN ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/282/282869.png", width=100)
+    st.title("Club Menu")
+    
+    # Password Logic
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["🏆 Running Rankings", "📤 Upload Session", "⚙️ Admin Tools"])
+    entered_password = st.text_input("Director Password", type="password")
+    
+    if entered_password:
+        if entered_password == st.secrets["admin_password"]:
+            st.session_state["is_admin"] = True
+            st.success("Admin Unlocked")
+        else:
+            st.session_state["is_admin"] = False
+            st.error("Incorrect Password")
 
-# --- DATA LOADER ---
-# Read data from Google Sheet "Sheet1"
+# --- DATA LOADING ---
 try:
-    # ttl=0 means "don't cache", get fresh data every time
     df = CONN.read(worksheet="Sheet1", ttl=0)
-    # If sheet is empty/new, create structure
     if df.empty:
-        df = pd.DataFrame(columns=['Date', 'Player', 'Percentage'])
+        df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
     else:
-        # Ensure Date column is datetime for filtering
         df['Date'] = pd.to_datetime(df['Date'])
+        # Ensure numeric columns
+        cols = ['Percentage', 'Boards']
+        for col in cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 except Exception:
-    df = pd.DataFrame(columns=['Date', 'Player', 'Percentage'])
+    df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
 
-# --- TAB 1: RANKINGS ---
+# --- MAIN LAYOUT ---
+st.title("♠️ ICC Bridge Club Rankings")
+
+# Tabs visible depend on login status
+if st.session_state["is_admin"]:
+    tab1, tab2, tab3 = st.tabs(["🏆 Leaderboards", "📤 Director Upload", "⚙️ Database Admin"])
+else:
+    tab1 = st.tabs(["🏆 Leaderboards"])[0] # Only show first tab to public
+
+# --- TAB 1: LEADERBOARDS (Public) ---
 with tab1:
     if df.empty:
-        st.info("The database is empty. Please upload an XML file in the Upload tab.")
+        st.info("No rankings available yet.")
     else:
-        st.write("### Monthly Accumulator")
+        # 1. VIEW TOGGLE
+        view_mode = st.radio("Select View:", 
+                             ["Monthly Accumulator", "Single Session"], 
+                             horizontal=True)
         
-        # 1. Select Year & Month
-        col1, col2 = st.columns(2)
-        
-        years = sorted(df['Date'].dt.year.unique(), reverse=True)
-        if not years: years = [datetime.now().year]
-        sel_year = col1.selectbox("Select Year", years)
-        
-        # Filter df to selected year first
-        df_year = df[df['Date'].dt.year == sel_year]
-        
-        if df_year.empty:
-            st.warning("No data for this year.")
-        else:
+        st.divider()
+
+        # LOGIC: MONTHLY ACCUMULATOR
+        if view_mode == "Monthly Accumulator":
+            col1, col2 = st.columns(2)
+            years = sorted(df['Date'].dt.year.unique(), reverse=True)
+            sel_year = col1.selectbox("Year", years)
+            
+            df_year = df[df['Date'].dt.year == sel_year]
             months = sorted(df_year['Date'].dt.month_name().unique(), 
                           key=lambda m: datetime.strptime(m, "%B").month)
-            sel_month = col2.selectbox("Select Month", months, index=len(months)-1)
             
-            # 2. Filter Data
-            mask = (df['Date'].dt.year == sel_year) & (df['Date'].dt.month_name() == sel_month)
-            monthly_data = df[mask]
-            
-            if monthly_data.empty:
-                st.warning("No data found for this month.")
+            if not months:
+                st.warning("No data for this year.")
             else:
-                # 3. Show Stats
-                sessions_found = sorted(monthly_data['Date'].dt.date.unique())
-                st.success(f"Found {len(sessions_found)} sessions: {', '.join(map(str, sessions_found))}")
+                sel_month = col2.selectbox("Month", months, index=len(months)-1)
                 
-                # 4. Calculate Leaderboard
-                # Group by Player Name
-                leaderboard = monthly_data.groupby('Player').agg(
-                    Sessions=('Date', 'nunique'),
-                    Average_Score=('Percentage', 'mean')
-                ).reset_index()
+                # Filter Data
+                mask = (df['Date'].dt.year == sel_year) & (df['Date'].dt.month_name() == sel_month)
+                monthly_data = df[mask].copy()
                 
-                # Sort by Average Score
-                leaderboard = leaderboard.sort_values(by='Average_Score', ascending=False).reset_index(drop=True)
-                leaderboard.index += 1 # Start rank at 1
-                
-                # Format Percentage
-                leaderboard['Average_Score'] = leaderboard['Average_Score'].map('{:.2f}%'.format)
-                
-                st.dataframe(leaderboard, use_container_width=True)
-
-# --- TAB 2: UPLOAD ---
-with tab2:
-    st.header("Upload XML Result")
-    st.write("Upload the XML file from your scoring software. The date will be detected automatically.")
-    
-    uploaded_file = st.file_uploader("Choose XML File", type=['xml'])
-    
-    if uploaded_file is not None:
-        if st.button("Process & Add to Rankings"):
-            with st.spinner("Processing..."):
-                session_date, new_data = parse_xml_usebio(uploaded_file)
-                
-                if new_data.empty:
-                    st.error("Could not extract data. Is this a valid USEBIO XML file?")
+                if monthly_data.empty:
+                    st.warning("No data.")
                 else:
-                    # Check for duplicates (prevent uploading same session twice)
-                    existing_dates = df['Date'].dt.date.astype(str).unique() if not df.empty else []
+                    # WEIGHTED AVG CALCULATION
+                    monthly_data['Score_Mass'] = monthly_data['Percentage'] * monthly_data['Boards']
                     
-                    if str(session_date) in existing_dates:
-                        st.error(f"⚠️ Stop! Results for {session_date} are already in the database.")
-                    else:
-                        # Append new data to old data
-                        # We convert date to string before sending to Google Sheets
-                        new_data['Date'] = new_data['Date'].astype(str)
-                        if not df.empty:
-                            df['Date'] = df['Date'].dt.date.astype(str)
-                            updated_df = pd.concat([df, new_data], ignore_index=True)
-                        else:
-                            updated_df = new_data
-                            
-                        # Update Google Sheet
-                        CONN.update(worksheet="Sheet1", data=updated_df)
-                        
-                        st.success(f"✅ Success! Added results for {session_date}.")
-                        st.balloons()
-                        st.cache_data.clear() # Clear cache to force refresh
-                        # Optional: Auto-rerun
-                        # st.rerun() 
+                    leaderboard = monthly_data.groupby('Player').agg(
+                        Sessions=('Date', 'nunique'),
+                        Total_Mass=('Score_Mass', 'sum'),
+                        Total_Boards=('Boards', 'sum')
+                    ).reset_index()
+                    
+                    leaderboard = leaderboard[leaderboard['Total_Boards'] > 0]
+                    leaderboard['Weighted_Average'] = leaderboard['Total_Mass'] / leaderboard['Total_Boards']
+                    
+                    # Sort & Format
+                    leaderboard = leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
+                    leaderboard.index += 1
+                    leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
+                    
+                    # Display
+                    st.dataframe(
+                        leaderboard[['Player', 'Sessions', 'Total_Boards', 'Weighted_Average']], 
+                        use_container_width=True
+                    )
 
-# --- TAB 3: ADMIN ---
-with tab3:
-    st.header("Database Maintenance")
-    st.warning("Use these buttons with caution.")
-    
-    col_a1, col_a2 = st.columns(2)
-    
-    with col_a1:
-        st.subheader("Clear Database")
-        if st.button("🗑️ Wipe All Data"):
-            empty_df = pd.DataFrame(columns=['Date', 'Player', 'Percentage'])
-            CONN.update(worksheet="Sheet1", data=empty_df)
-            st.success("Database wiped clean.")
-            st.rerun()
+        # LOGIC: SINGLE SESSION
+        else:
+            dates = sorted(df['Date'].dt.date.unique(), reverse=True)
+            sel_date = st.selectbox("Select Session Date", dates)
             
-    with col_a2:
-        st.subheader("View Raw Data")
-        if st.checkbox("Show Google Sheet Data"):
-            st.dataframe(df)
+            session_data = df[df['Date'].dt.date == sel_date].copy()
+            
+            if session_data.empty:
+                st.warning("No data.")
+            else:
+                # Simple sort by Percentage for single session
+                ranking = session_data[['Player', 'Percentage', 'Boards']].sort_values(
+                    by='Percentage', ascending=False
+                ).reset_index(drop=True)
+                
+                ranking.index += 1
+                ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
+                
+                st.write(f"### Results for {sel_date}")
+                st.dataframe(ranking, use_container_width=True)
+
+# --- TAB 2: UPLOAD (Admin Only) ---
+if st.session_state["is_admin"]:
+    with tab2:
+        st.header("Upload XML Result")
+        uploaded_file = st.file_uploader("Choose XML File", type=['xml'])
+        
+        if uploaded_file and st.button("Process & Add"):
+            session_date, new_data = parse_xml_usebio(uploaded_file)
+            
+            if not new_data.empty:
+                existing_dates = df['Date'].dt.date.astype(str).unique() if not df.empty else []
+                
+                if str(session_date) in existing_dates:
+                    st.error(f"⚠️ Results for {session_date} are already in the database.")
+                else:
+                    new_data['Date'] = new_data['Date'].astype(str)
+                    if not df.empty:
+                        df['Date'] = df['Date'].dt.date.astype(str)
+                    
+                    updated_df = pd.concat([df, new_data], ignore_index=True)
+                    CONN.update(worksheet="Sheet1", data=updated_df)
+                    st.success(f"✅ Added {session_date}!")
+                    st.balloons()
+                    st.cache_data.clear()
+
+# --- TAB 3: ADMIN (Admin Only) ---
+if st.session_state["is_admin"]:
+    with tab3:
+        st.header("Maintenance")
+        st.warning("Be careful.")
+        
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            if st.button("🗑️ Wipe Database (Reset Columns)"):
+                empty_df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
+                CONN.update(worksheet="Sheet1", data=empty_df)
+                st.success("Database reset.")
+                st.rerun()
+        with col_a2:
+            if st.button("🔄 Refresh Cache"):
+                st.cache_data.clear()
+                st.rerun()
+        
+        st.write("Current Data Preview:")
+        st.dataframe(df)
