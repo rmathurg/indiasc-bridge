@@ -72,30 +72,31 @@ def parse_xml_usebio(uploaded_file):
         st.error(f"XML Parsing Error: {e}")
         return None, pd.DataFrame()
 
-# --- HTML TABLE GENERATOR (For Perfect Formatting) ---
+# --- HTML TABLE GENERATOR (Fixed Indentation & Widths) ---
 def render_ranking_table(df, score_col_name="Weighted Average"):
-    """Creates a beautiful HTML table with centered columns and exact widths"""
+    """Creates a HTML table with tighter columns and no Markdown indentation bugs"""
     
+    # CSS: Adjusted widths (Player gets 55%, others get 10-15%)
     html = """
     <style>
-        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 16px;}
-        th {background-color: #f0f2f6; padding: 12px; text-align: center; border-bottom: 2px solid #ddd; color: #31333F;}
-        td {padding: 10px; border-bottom: 1px solid #eee; color: #31333F;}
+        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
+        th {background-color: #f0f2f6; padding: 10px 5px; text-align: center; border-bottom: 2px solid #ddd; color: #31333F; font-size: 14px;}
+        td {padding: 8px 5px; border-bottom: 1px solid #eee; color: #31333F;}
         tr:hover {background-color: #f9f9f9;}
         
-        /* Column Widths and Alignments */
-        .col-rank {text-align: center; width: 10%; font-weight: bold; color: #555;}
-        .col-player {text-align: left; width: 35%; font-weight: 500;}
-        .col-data {text-align: center; width: 18%;}
+        /* Specific Column Styles */
+        .col-rank {text-align: center; width: 5%; font-weight: bold; color: #666;}
+        .col-player {text-align: left; width: 50%; font-weight: 500; padding-left: 15px;}
+        .col-data {text-align: center; width: 15%;}
     </style>
     
     <table>
         <thead>
             <tr>
-                <th class="col-rank">Rank</th>
-                <th class="col-player" style="padding-left: 20px;">Player</th>
+                <th class="col-rank">#</th>
+                <th class="col-player" style="text-align: left; padding-left: 15px;">Player</th>
                 <th class="col-data">Sessions</th>
-                <th class="col-data">Total Boards</th>
+                <th class="col-data">Boards</th>
                 <th class="col-data">""" + score_col_name + """</th>
             </tr>
         </thead>
@@ -103,27 +104,18 @@ def render_ranking_table(df, score_col_name="Weighted Average"):
     """
     
     for index, row in df.iterrows():
-        # Clean data for display
-        rank = index # Index already starts at 1
+        rank = index # Index starts at 1
         player = row['Player']
         sessions = int(row['Sessions']) if 'Sessions' in row else 1
         boards = int(row['Boards']) if 'Boards' in row else int(row['Total_Boards'])
         
-        # Handle the score (might be weighted or raw)
         if 'Weighted_Average' in row:
             score = row['Weighted_Average']
         else:
             score = row['Percentage']
             
-        html += f"""
-            <tr>
-                <td class="col-rank">{rank}</td>
-                <td class="col-player" style="padding-left: 20px;">{player}</td>
-                <td class="col-data">{sessions}</td>
-                <td class="col-data">{boards}</td>
-                <td class="col-data" style="font-weight: bold;">{score}</td>
-            </tr>
-        """
+        # IMPORTANT: No indentation in this f-string to prevent markdown errors
+        html += f"""<tr><td class="col-rank">{rank}</td><td class="col-player">{player}</td><td class="col-data">{sessions}</td><td class="col-data">{boards}</td><td class="col-data" style="font-weight: bold;">{score}</td></tr>"""
         
     html += "</tbody></table>"
     return html
@@ -158,7 +150,6 @@ try:
         df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
     else:
         df['Date'] = pd.to_datetime(df['Date'])
-        # Ensure numeric columns and fill NaNs
         df['Percentage'] = pd.to_numeric(df['Percentage'], errors='coerce').fillna(0)
         df['Boards'] = pd.to_numeric(df['Boards'], errors='coerce').fillna(0)
 except Exception:
@@ -179,7 +170,6 @@ with active_tabs[0]:
     if df.empty:
         st.info("No rankings available yet.")
     else:
-        # VIEW TOGGLE
         view_mode = st.radio("Select View:", ["Monthly Accumulator", "Single Session"], horizontal=True)
         st.divider()
 
@@ -219,10 +209,10 @@ with active_tabs[0]:
                     leaderboard = leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
                     leaderboard.index += 1
                     
-                    # Formatting
+                    # Format
                     leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
                     
-                    # RENDER HTML TABLE
+                    # RENDER HTML
                     st.markdown(render_ranking_table(leaderboard, "Weighted Average"), unsafe_allow_html=True)
 
         # --- SINGLE SESSION VIEW ---
@@ -238,7 +228,7 @@ with active_tabs[0]:
                 ranking.index += 1
                 ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
                 
-                # RENDER HTML TABLE
+                # RENDER HTML
                 st.markdown(render_ranking_table(ranking, "Percentage"), unsafe_allow_html=True)
 
 # --- TAB 2: UPLOAD (Admin Only) ---
@@ -282,5 +272,5 @@ if st.session_state["is_admin"]:
                 st.success("Database reset.")
                 st.rerun()
         with col_a2:
-            st.write("Current Database Preview (Raw):")
+            st.write("Current Database Preview:")
             st.dataframe(df)
