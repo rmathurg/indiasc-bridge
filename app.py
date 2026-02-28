@@ -33,7 +33,6 @@ def parse_xml_usebio(uploaded_file):
             return None, pd.DataFrame() 
         
         raw_date = date_node.text
-        # Handle date formats
         try:
             session_date = datetime.strptime(raw_date, "%d/%m/%Y").date()
         except ValueError:
@@ -73,20 +72,74 @@ def parse_xml_usebio(uploaded_file):
         st.error(f"XML Parsing Error: {e}")
         return None, pd.DataFrame()
 
+# --- HTML TABLE GENERATOR (For Perfect Formatting) ---
+def render_ranking_table(df, score_col_name="Weighted Average"):
+    """Creates a beautiful HTML table with centered columns and exact widths"""
+    
+    html = """
+    <style>
+        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 16px;}
+        th {background-color: #f0f2f6; padding: 12px; text-align: center; border-bottom: 2px solid #ddd; color: #31333F;}
+        td {padding: 10px; border-bottom: 1px solid #eee; color: #31333F;}
+        tr:hover {background-color: #f9f9f9;}
+        
+        /* Column Widths and Alignments */
+        .col-rank {text-align: center; width: 10%; font-weight: bold; color: #555;}
+        .col-player {text-align: left; width: 35%; font-weight: 500;}
+        .col-data {text-align: center; width: 18%;}
+    </style>
+    
+    <table>
+        <thead>
+            <tr>
+                <th class="col-rank">Rank</th>
+                <th class="col-player" style="padding-left: 20px;">Player</th>
+                <th class="col-data">Sessions</th>
+                <th class="col-data">Total Boards</th>
+                <th class="col-data">""" + score_col_name + """</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    
+    for index, row in df.iterrows():
+        # Clean data for display
+        rank = index # Index already starts at 1
+        player = row['Player']
+        sessions = int(row['Sessions']) if 'Sessions' in row else 1
+        boards = int(row['Boards']) if 'Boards' in row else int(row['Total_Boards'])
+        
+        # Handle the score (might be weighted or raw)
+        if 'Weighted_Average' in row:
+            score = row['Weighted_Average']
+        else:
+            score = row['Percentage']
+            
+        html += f"""
+            <tr>
+                <td class="col-rank">{rank}</td>
+                <td class="col-player" style="padding-left: 20px;">{player}</td>
+                <td class="col-data">{sessions}</td>
+                <td class="col-data">{boards}</td>
+                <td class="col-data" style="font-weight: bold;">{score}</td>
+            </tr>
+        """
+        
+    html += "</tbody></table>"
+    return html
+
 # --- SIDEBAR LOGIN ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/282/282869.png", width=100)
     st.title("Club Menu")
     
-    # Check if logged in
     if "is_admin" not in st.session_state:
         st.session_state["is_admin"] = False
 
-    # Password Field
     if not st.session_state["is_admin"]:
         entered_password = st.text_input("Director Password", type="password")
         if entered_password:
-            # Check password (ensure 'admin_password' is at TOP of secrets.toml)
+            # Check secrets (ensure 'admin_password' is at TOP of secrets.toml)
             if "admin_password" in st.secrets and entered_password == st.secrets["admin_password"]:
                 st.session_state["is_admin"] = True
                 st.success("Unlocked")
@@ -105,17 +158,15 @@ try:
         df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
     else:
         df['Date'] = pd.to_datetime(df['Date'])
-        # Ensure numeric columns
-        cols = ['Percentage', 'Boards']
-        for col in cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # Ensure numeric columns and fill NaNs
+        df['Percentage'] = pd.to_numeric(df['Percentage'], errors='coerce').fillna(0)
+        df['Boards'] = pd.to_numeric(df['Boards'], errors='coerce').fillna(0)
 except Exception:
     df = pd.DataFrame(columns=['Date', 'Player', 'Percentage', 'Boards'])
 
 # --- MAIN LAYOUT ---
 st.title("♠️ ICC Bridge Club Rankings")
 
-# Determine which tabs to show
 tabs = ["🏆 Leaderboards"]
 if st.session_state["is_admin"]:
     tabs.append("📤 Director Upload")
@@ -171,20 +222,8 @@ with active_tabs[0]:
                     # Formatting
                     leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
                     
-                    # RENAME & SELECT Columns
-                    display_df = leaderboard[['Player', 'Sessions', 'Total_Boards', 'Weighted_Average']]
-                    display_df.columns = ['Player', 'Sessions', 'Total Boards', 'Weighted Average']
-
-                    # CENTER ALIGNMENT STYLING
-                    # We use Pandas Styler to center specific columns and headers
-                    styled_df = display_df.style.set_properties(
-                        subset=['Sessions', 'Total Boards', 'Weighted Average'], 
-                        **{'text-align': 'center'}
-                    ).set_table_styles(
-                        [{'selector': 'th', 'props': [('text-align', 'center')]}]
-                    )
-                    
-                    st.dataframe(styled_df, use_container_width=True)
+                    # RENDER HTML TABLE
+                    st.markdown(render_ranking_table(leaderboard, "Weighted Average"), unsafe_allow_html=True)
 
         # --- SINGLE SESSION VIEW ---
         else:
@@ -199,15 +238,8 @@ with active_tabs[0]:
                 ranking.index += 1
                 ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
                 
-                # CENTER ALIGNMENT
-                styled_ranking = ranking.style.set_properties(
-                    subset=['Percentage', 'Boards'], 
-                    **{'text-align': 'center'}
-                ).set_table_styles(
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}]
-                )
-                
-                st.dataframe(styled_ranking, use_container_width=True)
+                # RENDER HTML TABLE
+                st.markdown(render_ranking_table(ranking, "Percentage"), unsafe_allow_html=True)
 
 # --- TAB 2: UPLOAD (Admin Only) ---
 if st.session_state["is_admin"]:
@@ -250,5 +282,5 @@ if st.session_state["is_admin"]:
                 st.success("Database reset.")
                 st.rerun()
         with col_a2:
-            st.write("Current Database Preview:")
+            st.write("Current Database Preview (Raw):")
             st.dataframe(df)
