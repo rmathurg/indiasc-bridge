@@ -72,14 +72,13 @@ def parse_xml_usebio(uploaded_file):
         st.error(f"XML Parsing Error: {e}")
         return None, pd.DataFrame()
 
-# --- HTML TABLE GENERATOR (Fixed Indentation & Widths) ---
+# --- HTML TABLE GENERATOR ---
 def render_ranking_table(df, score_col_name="Weighted Average"):
     """Creates a HTML table with tighter columns and no Markdown indentation bugs"""
     
-    # CSS: Adjusted widths (Player gets 55%, others get 10-15%)
     html = """
     <style>
-        table {width: 60%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
+        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
         th {background-color: #f0f2f6; padding: 10px 5px; text-align: center; border-bottom: 2px solid #ddd; color: #31333F; font-size: 14px;}
         td {padding: 8px 5px; border-bottom: 1px solid #eee; color: #31333F;}
         tr:hover {background-color: #f9f9f9;}
@@ -131,7 +130,6 @@ with st.sidebar:
     if not st.session_state["is_admin"]:
         entered_password = st.text_input("Director Password", type="password")
         if entered_password:
-            # Check secrets (ensure 'admin_password' is at TOP of secrets.toml)
             if "admin_password" in st.secrets and entered_password == st.secrets["admin_password"]:
                 st.session_state["is_admin"] = True
                 st.success("Unlocked")
@@ -139,6 +137,7 @@ with st.sidebar:
             else:
                 st.error("Incorrect Password")
     else:
+        st.success("Director Mode Active")
         if st.button("Logout"):
             st.session_state["is_admin"] = False
             st.rerun()
@@ -212,6 +211,13 @@ with active_tabs[0]:
                     # Format
                     leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
                     
+                    # --- TOP 10 LOGIC ---
+                    if not st.session_state["is_admin"]:
+                        st.caption("Displaying **Top 10** Leaders. Login as Director to view full standings.")
+                        leaderboard = leaderboard.head(10)
+                    else:
+                        st.caption(f"Director Mode: Showing all {len(leaderboard)} players.")
+
                     # RENDER HTML
                     st.markdown(render_ranking_table(leaderboard, "Weighted Average"), unsafe_allow_html=True)
 
@@ -227,6 +233,12 @@ with active_tabs[0]:
                 ranking = session_data[['Player', 'Percentage', 'Boards']].sort_values(by='Percentage', ascending=False).reset_index(drop=True)
                 ranking.index += 1
                 ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
+                
+                # We usually show FULL list for single sessions so people can verify their scores
+                # But if you want Top 10 here too, uncomment the next 3 lines:
+                # if not st.session_state["is_admin"]:
+                #     st.caption("Displaying Top 10.")
+                #     ranking = ranking.head(10)
                 
                 # RENDER HTML
                 st.markdown(render_ranking_table(ranking, "Percentage"), unsafe_allow_html=True)
@@ -274,4 +286,3 @@ if st.session_state["is_admin"]:
         with col_a2:
             st.write("Current Database Preview:")
             st.dataframe(df)
-
