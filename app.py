@@ -3,6 +3,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
+import math
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ICC Bridge Club", layout="wide", page_icon="♠️")
@@ -74,8 +75,7 @@ def parse_xml_usebio(uploaded_file):
 
 # --- HTML TABLE GENERATOR ---
 def render_ranking_table(df, score_col_name="Weighted Average"):
-    """Creates a HTML table with tighter columns and no Markdown indentation bugs"""
-    
+    """Creates a HTML table with tighter columns"""
     html = """
     <style>
         table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
@@ -83,7 +83,7 @@ def render_ranking_table(df, score_col_name="Weighted Average"):
         td {padding: 8px 5px; border-bottom: 1px solid #eee; color: #31333F;}
         tr:hover {background-color: #f9f9f9;}
         
-        /* Specific Column Styles */
+        /* Column Styles */
         .col-rank {text-align: center; width: 5%; font-weight: bold; color: #666;}
         .col-player {text-align: left; width: 50%; font-weight: 500; padding-left: 15px;}
         .col-data {text-align: center; width: 15%;}
@@ -113,7 +113,6 @@ def render_ranking_table(df, score_col_name="Weighted Average"):
         else:
             score = row['Percentage']
             
-        # IMPORTANT: No indentation in this f-string to prevent markdown errors
         html += f"""<tr><td class="col-rank">{rank}</td><td class="col-player">{player}</td><td class="col-data">{sessions}</td><td class="col-data">{boards}</td><td class="col-data" style="font-weight: bold;">{score}</td></tr>"""
         
     html += "</tbody></table>"
@@ -195,6 +194,7 @@ with active_tabs[0]:
                     # CALCULATION
                     monthly_data['Score_Mass'] = monthly_data['Percentage'] * monthly_data['Boards']
                     
+                    # 1. Group Data
                     leaderboard = monthly_data.groupby('Player').agg(
                         Sessions=('Date', 'nunique'),
                         Total_Mass=('Score_Mass', 'sum'),
@@ -204,22 +204,38 @@ with active_tabs[0]:
                     leaderboard = leaderboard[leaderboard['Total_Boards'] > 0]
                     leaderboard['Weighted_Average'] = leaderboard['Total_Mass'] / leaderboard['Total_Boards']
                     
-                    # Sort
-                    leaderboard = leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
-                    leaderboard.index += 1
+                    # 2. Calculate Requirements
+                    total_sessions_in_month = monthly_data['Date'].nunique()
+                    min_req = math.ceil(total_sessions_in_month / 2)
                     
-                    # Format
-                    leaderboard['Weighted_Average'] = leaderboard['Weighted_Average'].map('{:.2f}%'.format)
-                    
-                    # --- TOP 10 LOGIC ---
+                    # 3. Filter Logic (The New Feature)
                     if not st.session_state["is_admin"]:
-                        st.caption("Displaying **Top 10** Leaders. Login as Director to view full standings.")
-                        leaderboard = leaderboard.head(10)
+                        # PUBLIC: Apply Attendance Filter
+                        qualified_leaderboard = leaderboard[leaderboard['Sessions'] >= min_req]
+                        
+                        # Sort
+                        qualified_leaderboard = qualified_leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
+                        qualified_leaderboard.index += 1
+                        
+                        # PUBLIC: Apply Top 10 Limit
+                        final_display = qualified_leaderboard.head(10)
+                        
+                        st.caption(f"**Ranking Rules:** Must play at least {min_req} of {total_sessions_in_month} sessions. Showing Top 10.")
+                        
+                        # Warn if empty (e.g. start of month and no one has played enough yet)
+                        if final_display.empty:
+                            st.info("No players have met the minimum attendance requirement yet.")
+                        
                     else:
-                        st.caption(f"Director Mode: Showing all {len(leaderboard)} players.")
+                        # DIRECTOR: Show Everyone (No Filter)
+                        leaderboard = leaderboard.sort_values(by='Weighted_Average', ascending=False).reset_index(drop=True)
+                        leaderboard.index += 1
+                        final_display = leaderboard
+                        st.caption(f"**Director Mode:** Showing all players. (Total Sessions: {total_sessions_in_month} | Min Req: {min_req})")
 
-                    # RENDER HTML
-                    st.markdown(render_ranking_table(leaderboard, "Weighted Average"), unsafe_allow_html=True)
+                    # Format & Render
+                    final_display['Weighted_Average'] = final_display['Weighted_Average'].map('{:.2f}%'.format)
+                    st.markdown(render_ranking_table(final_display, "Weighted Average"), unsafe_allow_html=True)
 
         # --- SINGLE SESSION VIEW ---
         else:
@@ -233,12 +249,6 @@ with active_tabs[0]:
                 ranking = session_data[['Player', 'Percentage', 'Boards']].sort_values(by='Percentage', ascending=False).reset_index(drop=True)
                 ranking.index += 1
                 ranking['Percentage'] = ranking['Percentage'].map('{:.2f}%'.format)
-                
-                # We usually show FULL list for single sessions so people can verify their scores
-                # But if you want Top 10 here too, uncomment the next 3 lines:
-                # if not st.session_state["is_admin"]:
-                #     st.caption("Displaying Top 10.")
-                #     ranking = ranking.head(10)
                 
                 # RENDER HTML
                 st.markdown(render_ranking_table(ranking, "Percentage"), unsafe_allow_html=True)
