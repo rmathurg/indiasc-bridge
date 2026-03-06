@@ -18,6 +18,7 @@ except Exception as e:
 # --- HELPER FUNCTIONS ---
 def clean_name(name_str):
     if not isinstance(name_str, str) or not name_str: return None
+    # Remove # codes or numbers that might accidentally stick to names
     if '#' in name_str:
         name_str = name_str.split('#')[0]
     clean = name_str.strip().title()
@@ -26,7 +27,7 @@ def clean_name(name_str):
 def parse_csv_text(csv_text, selected_date):
     """
     Parses CSV text directly from the text area.
-    Handles 'Pair', 'Names' (with & or and), 'Percentage', 'Boards'
+    Robustly handles splitting names with '&'.
     """
     try:
         # Convert string to a virtual file
@@ -37,10 +38,11 @@ def parse_csv_text(csv_text, selected_date):
         df_input.columns = [c.strip().lower() for c in df_input.columns]
         
         # Identify columns
+        # FIX: We removed 'pair' from the combined search so it doesn't grab the Pair Number column
         col_map = {
             'p1': next((c for c in df_input.columns if 'player 1' in c or 'n/s' in c), None),
             'p2': next((c for c in df_input.columns if 'player 2' in c or 'e/w' in c), None),
-            'combined': next((c for c in df_input.columns if 'pair' in c or 'names' in c or 'players' in c), None),
+            'combined': next((c for c in df_input.columns if 'names' in c or 'players' in c or 'partners' in c), None),
             'score': next((c for c in df_input.columns if 'percentage' in c or 'score' in c or 'average' in c or '%' in c), None),
             'boards': next((c for c in df_input.columns if 'board' in c or 'bds' in c), None)
         }
@@ -68,8 +70,8 @@ def parse_csv_text(csv_text, selected_date):
                 p1_name = None
                 p2_name = None
                 
-                # Case A: Combined Column (e.g. "Shree G & Ahmed Hasan")
-                if col_map['combined'] and not col_map['p1']:
+                # Logic: If we found a "Names" column, use it and split by &
+                if col_map['combined']:
                     raw_name = str(row[col_map['combined']])
                     # Clean up common separators
                     if '&' in raw_name:
@@ -83,15 +85,17 @@ def parse_csv_text(csv_text, selected_date):
                     else:
                         p1_name = raw_name 
                 
-                # Case B: Separate Columns
-                else:
-                    if col_map['p1']: p1_name = row[col_map['p1']]
-                    if col_map['p2']: p2_name = row[col_map['p2']]
+                # Logic: If we have Player 1 / Player 2 columns
+                elif col_map['p1']:
+                    p1_name = row[col_map['p1']]
+                    if col_map['p2']: 
+                        p2_name = row[col_map['p2']]
                 
                 # 4. Add to records
                 for p in [p1_name, p2_name]:
                     clean = clean_name(p)
-                    if clean:
+                    # Ignore empty names or placeholders like 'Sitout'
+                    if clean and "sitout" not in clean.lower():
                         records.append({
                             'Date': str(selected_date),
                             'Player': clean,
@@ -265,7 +269,6 @@ if st.session_state["is_admin"]:
     with active_tabs[1]:
         st.header("Upload Results")
         st.info("Format: Paste CSV data extracted from your image.")
-        st.markdown("**How to:** Upload your image to ChatGPT/AI, ask for CSV, then paste it here.")
         
         # 1. DATE PICKER
         upload_date = st.date_input("Session Date", datetime.today())
