@@ -116,7 +116,7 @@ def parse_csv_text(csv_text, selected_date):
 def render_ranking_table(df, score_col_name="Weighted Average"):
     html = """
     <style>
-        table {width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
+        table {width: 60%; border-collapse: collapse; font-family: sans-serif; font-size: 15px;}
         th {background-color: #f0f2f6; padding: 10px 5px; text-align: center; border-bottom: 2px solid #ddd; color: #31333F; font-size: 14px;}
         td {padding: 8px 5px; border-bottom: 1px solid #eee; color: #31333F;}
         tr:hover {background-color: #f9f9f9;}
@@ -316,3 +316,4 @@ if st.session_state["is_admin"]:
         with col_a2:
             st.write("Current Database Preview:")
             st.dataframe(df)
+
