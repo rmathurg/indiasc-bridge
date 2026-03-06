@@ -1,3 +1,6 @@
 streamlit
 pandas
 st-gsheets-connection
+pytesseract
+opencv-python-headless
+Pillow
