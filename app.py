@@ -3,11 +3,7 @@ import pandas as pd
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 import math
-import cv2
-import numpy as np
-import pytesseract
-from PIL import Image
-import re
+import io
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ICC Bridge Club", layout="wide", page_icon="♠️")
@@ -24,77 +20,75 @@ def clean_name(name_str):
     if not isinstance(name_str, str) or not name_str: return None
     if '#' in name_str:
         name_str = name_str.split('#')[0]
-    # Remove any accidentally scanned digits at end of name
     clean = name_str.strip().title()
     return clean if clean else None
 
-def extract_data_from_image(image_file, selected_date):
+def parse_csv_text(csv_text, selected_date):
     """
-    Uses OCR (Tesseract) to read the Bridge Result Image.
-    Target Format: Rank | PairNo | Names | Percentage | MP | Boards
-    Example Line: "1 7 Shree G & Ahmed Hasan 63.07% ..."
+    Parses CSV text directly from the text area.
+    Handles 'Pair', 'Names' (with & or and), 'Percentage', 'Boards'
     """
     try:
-        # 1. Convert uploaded file to Image
-        img = Image.open(image_file)
+        # Convert string to a virtual file
+        csv_file = io.StringIO(csv_text)
+        df_input = pd.read_csv(csv_file)
         
-        # 2. Pre-process for better OCR (Convert to grayscale)
-        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        # Normalize headers to lowercase/strip
+        df_input.columns = [c.strip().lower() for c in df_input.columns]
         
-        # 3. Extract Text using Tesseract
-        # --psm 6 assumes a single uniform block of text
-        text = pytesseract.image_to_string(gray, config='--psm 6')
+        # Identify columns
+        col_map = {
+            'p1': next((c for c in df_input.columns if 'player 1' in c or 'n/s' in c), None),
+            'p2': next((c for c in df_input.columns if 'player 2' in c or 'e/w' in c), None),
+            'combined': next((c for c in df_input.columns if 'pair' in c or 'names' in c or 'players' in c), None),
+            'score': next((c for c in df_input.columns if 'percentage' in c or 'score' in c or 'average' in c or '%' in c), None),
+            'boards': next((c for c in df_input.columns if 'board' in c or 'bds' in c), None)
+        }
         
+        if not col_map['score']:
+            st.error("Error: Could not find a 'Percentage' column. Please check the CSV format.")
+            return pd.DataFrame()
+
         records = []
         
-        # 4. Parse line by line using Regex
-        # Looking for: Any digits (Rank) -> Any digits (Pair) -> Text (Names) -> Number followed by %
-        # Regex explanation:
-        # (?P<rank>\d+)   : Capture Rank digits
-        # \s+             : Spaces
-        # (?P<pair>\d+)   : Capture Pair Number digits
-        # \s+             : Spaces
-        # (?P<names>.+?)  : Capture Names (non-greedy)
-        # \s+             : Spaces
-        # (?P<score>\d+\.\d+)% : Capture Score (digits.digits)%
-        pattern = re.compile(r'(?P<rank>\d+)\s+(?P<pair>\d+)\s+(?P<names>.+?)\s+(?P<score>\d+\.\d+)%')
-
-        for line in text.split('\n'):
-            match = pattern.search(line)
-            if match:
-                data = match.groupdict()
-                raw_names = data['names']
-                pct = float(data['score'])
+        for _, row in df_input.iterrows():
+            try:
+                # 1. Get Score
+                raw_score = str(row[col_map['score']]).replace('%', '').strip()
+                pct = float(raw_score)
                 
-                # Try to find boards at the end of the line (usually last 2 digits)
-                # Default to 18 if OCR misses it
+                # 2. Get Boards (Default 18)
                 boards = 18
-                try:
-                    # Look for digits at the very end of the line
-                    boards_match = re.search(r'(\d+)\s*$', line)
-                    if boards_match:
-                        b_val = int(boards_match.group(1))
-                        if 10 <= b_val <= 36: # Sanity check for boards
-                            boards = b_val
-                except: pass
-
-                # Split Names
+                if col_map['boards'] and pd.notna(row[col_map['boards']]):
+                    try:
+                        boards = int(row[col_map['boards']])
+                    except: pass
+                
+                # 3. Get Players
                 p1_name = None
                 p2_name = None
                 
-                if '&' in raw_names:
-                    parts = raw_names.split('&')
-                    p1_name = parts[0]
-                    p2_name = parts[1]
-                elif ' and ' in raw_names.lower():
-                    parts = raw_names.lower().split(' and ')
-                    p1_name = parts[0]
-                    p2_name = parts[1]
-                else:
-                    p1_name = raw_names # Single player?
+                # Case A: Combined Column (e.g. "Shree G & Ahmed Hasan")
+                if col_map['combined'] and not col_map['p1']:
+                    raw_name = str(row[col_map['combined']])
+                    # Clean up common separators
+                    if '&' in raw_name:
+                        parts = raw_name.split('&')
+                        p1_name = parts[0]
+                        p2_name = parts[1] if len(parts) > 1 else None
+                    elif ' and ' in raw_name.lower():
+                        parts = raw_name.lower().split(' and ')
+                        p1_name = parts[0]
+                        p2_name = parts[1] if len(parts) > 1 else None
+                    else:
+                        p1_name = raw_name 
                 
-                # Add records
+                # Case B: Separate Columns
+                else:
+                    if col_map['p1']: p1_name = row[col_map['p1']]
+                    if col_map['p2']: p2_name = row[col_map['p2']]
+                
+                # 4. Add to records
                 for p in [p1_name, p2_name]:
                     clean = clean_name(p)
                     if clean:
@@ -104,11 +98,14 @@ def extract_data_from_image(image_file, selected_date):
                             'Percentage': pct,
                             'Boards': boards
                         })
-        
+                        
+            except Exception as e:
+                continue
+                
         return pd.DataFrame(records)
 
     except Exception as e:
-        st.error(f"OCR Error: {e}")
+        st.error(f"Parsing Error: {e}")
         return pd.DataFrame()
 
 # --- HTML TABLE GENERATOR ---
@@ -218,6 +215,7 @@ with active_tabs[0]:
                 if monthly_data.empty:
                     st.warning("No data.")
                 else:
+                    # CALCULATION
                     monthly_data['Score_Mass'] = monthly_data['Percentage'] * monthly_data['Boards']
                     
                     leaderboard = monthly_data.groupby('Player').agg(
@@ -265,33 +263,30 @@ with active_tabs[0]:
 # --- TAB 2: UPLOAD (Admin Only) ---
 if st.session_state["is_admin"]:
     with active_tabs[1]:
-        st.header("Upload Results Image")
-        st.info("Upload the Score Table image (PNG/JPG). The app will try to read the names and scores.")
+        st.header("Upload Results")
+        st.info("Format: Paste CSV data extracted from your image.")
+        st.markdown("**How to:** Upload your image to ChatGPT/AI, ask for CSV, then paste it here.")
         
         # 1. DATE PICKER
         upload_date = st.date_input("Session Date", datetime.today())
         
-        # 2. FILE UPLOADER (Images only)
-        uploaded_file = st.file_uploader("Choose Image File", type=['png', 'jpg', 'jpeg'])
+        # 2. TEXT AREA FOR COPY-PASTE
+        csv_text = st.text_area("Paste CSV Text Here", height=200, placeholder="Pair, Names, Percentage, Boards\n1, John & Jane, 55.5, 18...")
         
-        if uploaded_file and st.button("Scan & Update"):
-            with st.spinner("Scanning image... this takes a few seconds..."):
-                new_data = extract_data_from_image(uploaded_file, upload_date)
-            
-            if new_data.empty:
-                st.error("Could not read data! Please ensure image is clear and contains a table.")
+        if st.button("Process & Update"):
+            if not csv_text:
+                st.error("Please paste CSV text first.")
             else:
-                st.write("### Preview of Scanned Data")
-                st.dataframe(new_data)
+                new_data = parse_csv_text(csv_text, upload_date)
                 
-                if st.button("Looks Good - Save to Database"):
+                if not new_data.empty:
                     session_str = str(upload_date)
                     
                     # OVERWRITE LOGIC
                     existing_dates = df['Date'].dt.date.astype(str).unique() if not df.empty else []
                     
                     if session_str in existing_dates:
-                        st.warning(f"⚠️ Overwriting existing results for {session_str}...")
+                        st.warning(f"⚠️ Results for {session_str} already exist. Overwriting...")
                         df = df[df['Date'].dt.date.astype(str) != session_str]
                     
                     new_data['Date'] = new_data['Date'].astype(str)
@@ -302,7 +297,6 @@ if st.session_state["is_admin"]:
                     
                     CONN.update(worksheet="Sheet1", data=updated_df)
                     st.success(f"✅ Successfully updated results for {upload_date}!")
-                    st.balloons()
                     st.cache_data.clear()
 
 # --- TAB 3: ADMIN (Admin Only) ---
